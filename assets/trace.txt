@@ -1,0 +1,7 @@
+sml-signal demo - click-counter trace
+
+t=0.0   count=0     doubled=0
+t=1.0   count=1     doubled=2
+t=2.0   count=2     doubled=4
+t=3.0   count=3     doubled=6
+t=5.0   count=4     doubled=8
