@@ -71,6 +71,47 @@ sig
      time order. Its break points are the (unique) occurrence times. *)
   val foldp   : ('a * 's -> 's) -> 's -> 'a event -> 's signal
 
+  (* `hold init ev` is a stepwise signal that starts at `init` and jumps to the
+     payload of the most recent occurrence at or before the sample time.
+     `stepper` is a synonym. *)
+  val hold    : 'a -> 'a event -> 'a signal
+  val stepper : 'a -> 'a event -> 'a signal
+
+  (* ---- event <-> signal interaction ---- *)
+
+  (* Sample a signal at each occurrence, pairing the event payload with the
+     signal's value at that instant. *)
+  val snapshot : 'b signal -> 'a event -> ('a * 'b) event
+  (* Replace each occurrence's payload with the signal's value at that time. *)
+  val tag      : 'b signal -> 'a event -> 'b event
+  (* Keep only occurrences for which the boolean signal is true at that time. *)
+  val gate     : bool signal -> 'a event -> 'a event
+
+  (* `accumE f init ev` threads state through the stream, emitting the new state
+     after each occurrence (a stateful scan that *outputs events*, not a
+     signal). `scanlE` is a synonym matching the list `scanl` naming. *)
+  val accumE   : ('a * 's -> 's) -> 's -> 'a event -> 's event
+  val scanlE   : ('a * 's -> 's) -> 's -> 'a event -> 's event
+
+  (* ---- dynamic switching ---- *)
+
+  (* `switcher init ev` behaves as `init` until the first signal-carrying
+     occurrence at or before the sample time, then as the most recent such
+     signal. Break points include the switch times and the active signal's
+     breaks. *)
+  val switcher : 'a signal -> 'a signal event -> 'a signal
+  (* Flatten a signal-of-signals: at instant `t` sample the inner signal that
+     the outer signal currently holds. *)
+  val switch   : 'a signal signal -> 'a signal
+
+  (* ---- applicative lifting ---- *)
+
+  (* Generalize `combine` to two/three signals. *)
+  val lift2 : ('a * 'b -> 'c) -> 'a signal -> 'b signal -> 'c signal
+  val lift3 : ('a * 'b * 'c -> 'd) -> 'a signal -> 'b signal -> 'c signal -> 'd signal
+  (* Applicative `<*>`: apply a signal of functions to a signal of values. *)
+  val apply : ('a -> 'b) signal -> 'a signal -> 'b signal
+
   (* Build a stream from an explicitly time-stamped list (sorted stably by
      time; equal-time entries keep their list order). *)
   val fromList : (real * 'a) list -> 'a event

@@ -81,15 +81,115 @@ struct
     | dedup (x :: y :: rest) =
         if Real.== (x, y) then dedup (y :: rest) else x :: dedup (y :: rest)
 
+  (* Incremental foldp: precompute the running accumulator at each unique
+     occurrence time once, then a sample is a search for the last break <= t.
+     This avoids re-folding the whole event list on every `sampleAt` while
+     producing byte-identical results (breaks and values) to the naive fold. *)
   fun foldp f init ev =
     let
+      (* steps : (time, accAfterThisTime) list, one entry per UNIQUE time, in
+         ascending time order. For ties at the same time we fold every
+         occurrence (in stream order) before recording the step. *)
+      val steps =
+        let
+          fun build (acc, []) = []
+            | build (acc, (t, x) :: rest) =
+                let
+                  (* fold all occurrences sharing this exact time t *)
+                  fun same (acc, (t', y) :: more) =
+                        if Real.== (t', t)
+                        then same (f (y, acc), more)
+                        else (acc, (t', y) :: more)
+                    | same (acc, []) = (acc, [])
+                  val (acc', rest') = same (f (x, acc), rest)
+                in
+                  (t, acc') :: build (acc', rest')
+                end
+        in
+          build (init, ev)
+        end
+
+      (* value at t: last step whose time <= t, else init *)
       fun at t =
-        List.foldl
-          (fn ((tt, x), acc) => if Real.<= (tt, t) then f (x, acc) else acc)
-          init ev
+        let
+          fun go (best, []) = best
+            | go (best, (tt, v) :: more) =
+                if Real.<= (tt, t) then go (v, more) else best
+        in
+          go (init, steps)
+        end
     in
-      { at = at, breaks = dedup (List.map #1 ev) }
+      { at = at, breaks = List.map #1 steps }
     end
+
+  (* hold/stepper: keep the most recent occurrence's payload (no folding). *)
+  fun hold init ev = foldp (fn (x, _) => x) init ev
+  val stepper = hold
+
+  (* ---- event <-> signal interaction ---- *)
+
+  fun snapshot (s : 'b signal) (ev : 'a event) : ('a * 'b) event =
+    List.map (fn (t, x) => (t, (x, #at s t))) ev
+
+  fun tag (s : 'b signal) (ev : 'a event) : 'b event =
+    List.map (fn (t, _) => (t, #at s t)) ev
+
+  fun gate (s : bool signal) (ev : 'a event) : 'a event =
+    List.filter (fn (t, _) => #at s t) ev
+
+  (* accumE/scanlE: emit the post-occurrence state as a new event each time. *)
+  fun accumE f init ev =
+    let
+      fun go (_, []) = []
+        | go (acc, (t, x) :: rest) =
+            let val acc' = f (x, acc)
+            in (t, acc') :: go (acc', rest) end
+    in
+      go (init, ev)
+    end
+  val scanlE = accumE
+
+  (* ---- dynamic switching ---- *)
+
+  (* switcher: a `hold`-like signal over signals. At time t, find the latest
+     switch occurrence whose time <= t and sample that signal; before any
+     switch, use `init`. Breaks include the switch times plus the breaks of
+     every candidate signal (a safe over-approximation that keeps `runUntil`
+     deterministic). *)
+  fun switcher (init : 'a signal) (ev : 'a signal event) : 'a signal =
+    let
+      fun activeAt t =
+        let
+          fun go (best, []) = best
+            | go (best, (tt, sg) :: more) =
+                if Real.<= (tt, t) then go (sg, more) else best
+        in
+          go (init, ev)
+        end
+      val switchTimes = List.map #1 ev
+      val innerBreaks =
+        List.foldl (fn ((_, sg), acc) => mergeBreaks (#breaks sg, acc))
+          (#breaks init) ev
+    in
+      { at = fn t => #at (activeAt t) t
+      , breaks = mergeBreaks (dedup switchTimes, innerBreaks) }
+    end
+
+  (* switch: flatten a signal-of-signals. *)
+  fun switch (ss : 'a signal signal) : 'a signal =
+    { at = fn t => #at (#at ss t) t, breaks = #breaks ss }
+
+  (* ---- applicative lifting ---- *)
+
+  fun lift2 f a b = combine f a b
+
+  fun lift3 f (a : 'a signal) (b : 'b signal) (c : 'c signal) : 'd signal =
+    { at = fn t => f (#at a t, #at b t, #at c t)
+    , breaks = mergeBreaks (#breaks a, mergeBreaks (#breaks b, #breaks c)) }
+
+  fun apply (sf : ('a -> 'b) signal) (sx : 'a signal) : 'b signal =
+    { at = fn t => (#at sf t) (#at sx t)
+    , breaks = mergeBreaks (#breaks sf, #breaks sx) }
 
   fun runUntil tMax (s : 's signal) =
     let
